@@ -1,0 +1,170 @@
+#!/bin/bash
+#
+# create-workspace
+#
+# 功能：
+#   - 在 main workspace 中的多个 git 仓库上创建多个 worktree 工作区
+#   - 每个工作区自动创建工作分支：workspace/<name>
+#   - 自动检测路径、仓库、脏状态、branch 存在性等各种安全问题
+#   - 仅做 worktree 创建，不做任何 merge/pull/commit 等动作
+#
+# 用法：
+#   create-workspace \
+#       --dir /Users/luoking/Desktop/Projects/Work \
+#       --base workspace \
+#       --repo main-web-ui webserver luoking-creatify-coding \
+#       --name momo kiki lulu
+#
+# 结果：
+#   /Users/luoking/Desktop/Projects/Work/workspace-main     ← 主 workspace
+#   /Users/luoking/Desktop/Projects/Work/workspace-momo     ← 自动创建
+#       ├── main-web-ui               ← worktree + branch workspace/momo
+#       ├── webserver
+#       └── luoking-creatify-coding
+#
+# 执行条件：
+#   - main workspace 必须存在 repo
+#   - main workspace repo 必须是干净状态
+#   - worktree 必须不会重复指向同一路径
+#
+# -----------------------------------------------
+
+# --- Color ---
+RED="\033[1;31m"; GREEN="\033[1;32m"; YELLOW="\033[1;33m"; BLUE="\033[1;34m"; RESET="\033[0m"
+
+# --- Parameters ---
+DIR=""
+BASE=""
+REPOS=()
+NAMES=()
+
+# -----------------------------------------------
+# Parse arguments
+# -----------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dir) DIR="$2"; shift 2;;
+        --base) BASE="$2"; shift 2;;
+        --repo)
+            shift
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do REPOS+=("$1"); shift; done;;
+        --name)
+            shift
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do NAMES+=("$1"); shift; done;;
+        *)
+            echo -e "${RED}Unknown option: $1${RESET}"
+            exit 1;;
+    esac
+done
+
+# -----------------------------------------------
+# Validate required arguments
+# -----------------------------------------------
+if [[ -z "$DIR" || -z "$BASE" || ${#REPOS[@]} -eq 0 || ${#NAMES[@]} -eq 0 ]]; then
+    echo -e "${RED}Missing required parameters.${RESET}"
+    echo "Usage example:"
+    echo "  create-workspace --dir /path --base workspace --repo a b c --name foo bar"
+    exit 1
+fi
+
+MAIN_WS="$DIR/${BASE}-main"
+
+if [[ ! -d "$MAIN_WS" ]]; then
+    echo -e "${RED}Main workspace not found: $MAIN_WS${RESET}"
+    exit 1
+fi
+
+echo -e "${BLUE}Main workspace:${RESET} $MAIN_WS"
+echo -e "${BLUE}Repos:${RESET} ${REPOS[*]}"
+echo -e "${BLUE}Workspaces to create:${RESET} ${NAMES[*]}"
+echo
+
+# -----------------------------------------------
+# Verify repos in main workspace
+# -----------------------------------------------
+echo -e "${YELLOW}Checking main workspace repos...${RESET}"
+
+for REPO in "${REPOS[@]}"; do
+    REPO_PATH="$MAIN_WS/$REPO"
+
+    # 1. folder exists
+    if [[ ! -d "$REPO_PATH" ]]; then
+        echo -e "${RED}❌ Repo missing: $REPO_PATH${RESET}"
+        exit 1
+    fi
+
+    # 2. must be git repo
+    if [[ ! -d "$REPO_PATH/.git" ]]; then
+        echo -e "${RED}❌ Not a git repository: $REPO_PATH${RESET}"
+        exit 1
+    fi
+
+    cd "$REPO_PATH"
+
+    # 3. repo must be clean
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo -e "${RED}❌ Repo dirty: $REPO_PATH${RESET}"
+        echo "   Commit or stash changes first."
+        exit 1
+    fi
+
+    # 4. must have remote origin
+    if ! git remote get-url origin &>/dev/null; then
+        echo -e "${RED}❌ No remote origin in repo: $REPO_PATH${RESET}"
+        exit 1
+    fi
+
+    echo -e "  ${GREEN}✔ Repo OK:${RESET} $REPO"
+done
+
+echo
+
+# -----------------------------------------------
+# Create workspaces
+# -----------------------------------------------
+for NAME in "${NAMES[@]}"; do
+    WS_PATH="$DIR/${BASE}-${NAME}"
+
+    if [[ -d "$WS_PATH" ]]; then
+        echo -e "${RED}❌ Workspace already exists: $WS_PATH${RESET}"
+        exit 1
+    fi
+
+    mkdir -p "$WS_PATH"
+    echo -e "${GREEN}Creating workspace:${RESET} $WS_PATH"
+
+    for REPO in "${REPOS[@]}"; do
+        MAIN_REPO_PATH="$MAIN_WS/$REPO"
+        TARGET_REPO_PATH="$WS_PATH/$REPO"
+        BRANCH="workspace/$NAME"
+
+        cd "$MAIN_REPO_PATH"
+
+        # 1. Branch exists?
+        if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            echo -e "  ${YELLOW}Branch exists:${RESET} $BRANCH"
+        else
+            echo -e "  ${GREEN}Creating branch:${RESET} $BRANCH"
+            git branch "$BRANCH"
+        fi
+
+        # 2. Worktree conflict?
+        if git worktree list | grep -q "$TARGET_REPO_PATH"; then
+            echo -e "${RED}❌ Worktree already exists: $TARGET_REPO_PATH${RESET}"
+            exit 1
+        fi
+
+        # 3. Add worktree
+        echo -e "  Adding worktree → ${GREEN}$TARGET_REPO_PATH${RESET}"
+        git worktree add "$TARGET_REPO_PATH" "$BRANCH"
+
+        cd "$TARGET_REPO_PATH"
+        git switch "$BRANCH" >/dev/null
+        echo -e "  ${GREEN}✔ Worktree OK${RESET}"
+    done
+
+    echo -e "${BLUE}Workspace created:${RESET} ${BASE}-${NAME}"
+    echo
+done
+
+echo -e "${GREEN}All worktrees created successfully.${RESET}"
