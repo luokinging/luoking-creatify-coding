@@ -1,0 +1,96 @@
+#!/bin/bash
+# rulesync: commit luoking-creatify-coding changes in main workspace, push, and merge to other workspaces
+# Usage:
+#   rulesync
+#
+# Functionality:
+#   1. Detect current workspace root
+#   2. Prevent running in main workspace preview branch
+#   3. Switch main workspace AI rules project to MAIN_BRANCH
+#   4. Commit any changes
+#   5. Push commit to remote
+#   6. Merge MAIN_BRANCH into other configured workspaces (only if commit happened)
+#   7. Color output for better visibility
+
+# === COLORS ===
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+BOLD="\033[1;1m"
+RESET="\033[0m"
+
+# === CONFIGURATION VARIABLES ===
+WORK_ROOT="/Users/luoking/Desktop/Projects/Work"               
+MAIN_WS="$WORK_ROOT/workspace-main"                           
+PROJECT="luoking-creatify-coding"                             
+MAIN_BRANCH="main"                                            
+WORKSPACES=("workspace-kiki" "workspace-lulu" "workspace-momo")  
+
+# ----------------------------
+# 0️⃣ 检查是否在 main workspace（禁止在 main preview 分支运行）
+CUR_DIR=$(pwd)
+CUR_WS_ROOT=""
+while [[ "$CUR_DIR" != "/" ]]; do
+    BASENAME=$(basename "$CUR_DIR")
+    if [[ "$BASENAME" == workspace-* ]]; then
+        CUR_WS_ROOT="$CUR_DIR"
+        break
+    fi
+    CUR_DIR=$(dirname "$CUR_DIR")
+done
+
+if [[ -z "$CUR_WS_ROOT" ]]; then
+    echo -e "${RED}Error:${RESET} cannot find workspace root (must be under $WORK_ROOT/workspace-*)"
+    exit 1
+fi
+
+if [[ "$CUR_WS_ROOT" == "$MAIN_WS" ]]; then
+    echo -e "${RED}Error:${RESET} rulesync should NOT be run in main workspace (preview branch)."
+    exit 1
+fi
+
+CUR_WS_NAME=$(basename "$CUR_WS_ROOT")
+echo -e "${BLUE}Detected workspace:${RESET} ${BOLD}$CUR_WS_NAME${RESET}"
+
+# ----------------------------
+# 1️⃣ 切换 main workspace项目到 MAIN_BRANCH
+cd "$MAIN_WS/$PROJECT" || { echo -e "${RED}Error:${RESET} cannot enter $PROJECT in main workspace"; exit 1; }
+git fetch origin
+git switch "$MAIN_BRANCH"
+echo -e "${GREEN}Switched${RESET} $PROJECT to branch ${BOLD}$MAIN_BRANCH${RESET}"
+
+# ----------------------------
+# 2️⃣ 提交修改（如果有）
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    git add .
+    git commit -m "Update AI coding rules"
+    echo -e "${GREEN}Committed changes${RESET} in $PROJECT"
+
+    # 3️⃣ 推送到远程
+    git push origin "$MAIN_BRANCH"
+    echo -e "${GREEN}Pushed changes${RESET} to remote branch ${BOLD}$MAIN_BRANCH${RESET}"
+
+    # ----------------------------
+    # 4️⃣ 合并 main 分支到其他 workspace
+    for WS in "${WORKSPACES[@]}"; do
+        WS_PATH="$WORK_ROOT/$WS/$PROJECT"
+        if [ -d "$WS_PATH" ]; then
+            echo -e "${YELLOW}Merging${RESET} $MAIN_BRANCH branch into $WS..."
+            cd "$WS_PATH" || continue
+            git fetch origin
+            if git merge origin/"$MAIN_BRANCH" --no-edit; then
+                echo -e "${GREEN}Merged successfully into${RESET} $WS"
+            else
+                echo -e "${RED}Conflict detected in${RESET} $WS"
+            fi
+        else
+            echo -e "${BLUE}Workspace not found, skipping:${RESET} $WS"
+        fi
+    done
+
+else
+    echo -e "${BLUE}No changes to commit in $PROJECT. Skipping merge to other workspaces.${RESET}"
+fi
+
+echo -e "${BOLD}${GREEN}Rule sync complete.${RESET}"
